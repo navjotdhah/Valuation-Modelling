@@ -5,3 +5,5 @@ numpy
 plotly
 requests
 scipy
+xlsxwriter
+openpyxl

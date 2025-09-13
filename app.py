@@ -4,155 +4,192 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime
 from scipy.stats import norm
-import requests
 
-# -----------------------------
+# ------------------------------
 # Page Config
-# -----------------------------
+# ------------------------------
 st.set_page_config(
-    page_title="Equity Valuation Terminal",
-    page_icon="📈",
+    page_title="Equity Valuation & Modelling",
+    page_icon="💹",
     layout="wide"
 )
 
-st.title("📊 Equity Valuation & Modelling Platform")
-st.markdown("An interactive tool for fundamental analysis, DCF valuation, comparables, options pricing, and real-time news.")
+st.title("💹 Equity Valuation & Modelling Platform")
+st.markdown("Built by **Navjot Dhah** | Professional financial modelling for IB / PE / AM roles")
 
-# -----------------------------
-# Data Fetcher (Serializable)
-# -----------------------------
-@st.cache_data
-def fetch_ticker_data(ticker):
-    """Fetch serializable financial data for a ticker."""
-    t = yf.Ticker(ticker)
+# ------------------------------
+# Sidebar: User Input
+# ------------------------------
+st.sidebar.header("Company Search")
+ticker = st.sidebar.text_input("Enter Ticker (e.g., AAPL, MSFT, WYNN):", "AAPL")
+period = st.sidebar.selectbox("Historical Period:", ["1y", "3y", "5y", "10y"], index=1)
 
-    info = t.info if isinstance(t.info, dict) else {}
-    hist = t.history(period="1y").reset_index()
+# ------------------------------
+# Fetch Data
+# ------------------------------
+try:
+    stock = yf.Ticker(ticker)
+    hist = stock.history(period=period)
+    fin = stock.financials
+    bal = stock.balance_sheet
+    cf = stock.cashflow
+    info = stock.info
+except Exception as e:
+    st.error(f"Error fetching data for {ticker}: {e}")
+    st.stop()
 
-    def safe_reset(df):
-        try:
-            return df.reset_index()
-        except Exception:
-            return pd.DataFrame()
+# ------------------------------
+# Price Chart
+# ------------------------------
+st.subheader(f"Stock Price Chart: {ticker}")
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=hist.index, y=hist["Close"], mode="lines", name="Close"))
+fig.update_layout(
+    template="plotly_dark", 
+    yaxis_title="Price (USD)", 
+    xaxis_title="Date", 
+    height=400
+)
+st.plotly_chart(fig, use_container_width=True)
 
-    return {
-        "info": info,
-        "history": hist,
-        "financials": safe_reset(t.financials),
-        "balance_sheet": safe_reset(t.balance_sheet),
-        "cashflow": safe_reset(t.cashflow),
-        "earnings": safe_reset(t.earnings)
-    }
+# ------------------------------
+# Display Financials
+# ------------------------------
+st.subheader("📊 Financial Statements")
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.markdown("**Income Statement**")
+    st.dataframe(fin.fillna(""))
+with col2:
+    st.markdown("**Balance Sheet**")
+    st.dataframe(bal.fillna(""))
+with col3:
+    st.markdown("**Cash Flow Statement**")
+    st.dataframe(cf.fillna(""))
 
-# -----------------------------
-# Helper Functions
-# -----------------------------
-def dcf_valuation(fcf, growth_rate, discount_rate, terminal_growth, years=5):
-    fcf_projections = [fcf * ((1 + growth_rate) ** i) for i in range(1, years + 1)]
-    discounted_fcfs = [fcf_projections[i] / ((1 + discount_rate) ** (i + 1)) for i in range(years)]
-    terminal_value = fcf_projections[-1] * (1 + terminal_growth) / (discount_rate - terminal_growth)
-    discounted_terminal = terminal_value / ((1 + discount_rate) ** years)
-    intrinsic_value = sum(discounted_fcfs) + discounted_terminal
-    return intrinsic_value, fcf_projections
+# ------------------------------
+# Linked 3-Statement Model (Simplified Projection)
+# ------------------------------
+st.subheader("📈 3-Statement Model Projection")
+years = st.slider("Projection Years:", 3, 10, 5)
 
-def black_scholes(S, K, T, r, sigma, option="call"):
-    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
-    d2 = d1 - sigma * np.sqrt(T)
-    if option == "call":
-        return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
-    else:
-        return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+# Base revenue assumption from last reported year
+try:
+    base_rev = fin.loc["Total Revenue"].iloc[0]
+except:
+    base_rev = 1e9
 
-@st.cache_data
-def fetch_news(ticker):
-    url = f"https://query1.finance.yahoo.com/v1/finance/search?q={ticker}"
-    try:
-        res = requests.get(url, timeout=5).json()
-        return res.get("news", [])
-    except Exception:
-        return []
+growth_rate = st.number_input("Revenue Growth Rate (%)", value=5.0) / 100
+ebit_margin = st.number_input("EBIT Margin (%)", value=15.0) / 100
+tax_rate = st.number_input("Tax Rate (%)", value=21.0) / 100
+dep_pct = st.number_input("Depreciation % of Revenue", value=5.0) / 100
+capex_pct = st.number_input("CapEx % of Revenue", value=6.0) / 100
+nwc_pct = st.number_input("Change in NWC % of Revenue", value=2.0) / 100
 
-# -----------------------------
-# Sidebar Inputs
-# -----------------------------
-st.sidebar.header("🔎 Search a Stock")
-ticker_input = st.sidebar.text_input("Enter ticker (e.g., AAPL, MSFT, WYNN)", "WYNN").upper()
+proj = []
+rev = base_rev
+for yr in range(1, years+1):
+    rev = rev * (1 + growth_rate)
+    ebit = rev * ebit_margin
+    tax = ebit * tax_rate
+    nopat = ebit - tax
+    dep = rev * dep_pct
+    capex = rev * capex_pct
+    nwc = rev * nwc_pct
+    fcf = nopat + dep - capex - nwc
+    proj.append([datetime.now().year + yr, rev, ebit, nopat, fcf])
 
-discount_rate = st.sidebar.slider("Discount Rate (WACC)", 0.05, 0.15, 0.09)
-growth_rate = st.sidebar.slider("FCF Growth Rate", 0.01, 0.15, 0.05)
-terminal_growth = st.sidebar.slider("Terminal Growth Rate", 0.01, 0.05, 0.025)
+proj_df = pd.DataFrame(proj, columns=["Year", "Revenue", "EBIT", "NOPAT", "FCF"])
+st.dataframe(proj_df.style.format("{:,.0f}"))
 
-# -----------------------------
-# Main Logic
-# -----------------------------
-if ticker_input:
-    data = fetch_ticker_data(ticker_input)
-    info = data["info"]
+# ------------------------------
+# WACC Calculation
+# ------------------------------
+st.subheader("⚖️ Weighted Average Cost of Capital (WACC)")
 
-    st.subheader(f"📌 Company Overview: {info.get('longName', ticker_input)}")
-    st.write(info.get("longBusinessSummary", "No company description available."))
+rf = st.number_input("Risk-Free Rate (%)", value=4.0) / 100
+beta = st.number_input("Beta (from CAPM)", value=1.1)
+mkt_return = st.number_input("Expected Market Return (%)", value=9.0) / 100
+cost_of_equity = rf + beta * (mkt_return - rf)
 
-    # Stock Price Chart
-    st.subheader("📈 Stock Price (1Y)")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=data["history"]["Date"],
-        y=data["history"]["Close"],
-        mode="lines",
-        name="Close Price"
-    ))
-    st.plotly_chart(fig, use_container_width=True)
+pretax_cost_debt = st.number_input("Pre-Tax Cost of Debt (%)", value=5.0) / 100
+tax_rate_for_wacc = st.number_input("Corporate Tax Rate (%)", value=21.0) / 100
+cost_of_debt = pretax_cost_debt * (1 - tax_rate_for_wacc)
 
-    # Financial Statements
-    st.subheader("🧾 Financial Statements")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown("**Income Statement**")
-        st.dataframe(data["financials"])
-    with col2:
-        st.markdown("**Balance Sheet**")
-        st.dataframe(data["balance_sheet"])
-    with col3:
-        st.markdown("**Cash Flow**")
-        st.dataframe(data["cashflow"])
+equity_val = st.number_input("Equity Value (Market Cap, $B)", value=info.get("marketCap", 1e10)/1e9) * 1e9
+debt_val = st.number_input("Total Debt ($B)", value=bal.loc["Total Debt"].iloc[0]/1e9 if "Total Debt" in bal.index else 10.0) * 1e9
 
-    # DCF Valuation
-    st.subheader("💵 Discounted Cash Flow Valuation")
-    try:
-        fcf = data["cashflow"].loc[data["cashflow"]["index"] == "Total Cash From Operating Activities"].iloc[0, 1]
-        capex = data["cashflow"].loc[data["cashflow"]["index"] == "Capital Expenditures"].iloc[0, 1]
-        fcf = fcf + capex
-        intrinsic_value, fcf_proj = dcf_valuation(fcf, growth_rate, discount_rate, terminal_growth)
-        st.success(f"Estimated Intrinsic Value (Enterprise): **${intrinsic_value:,.0f}**")
+w_e = equity_val / (equity_val + debt_val)
+w_d = debt_val / (equity_val + debt_val)
+wacc = w_e * cost_of_equity + w_d * cost_of_debt
 
-        proj_df = pd.DataFrame({
-            "Year": list(range(1, len(fcf_proj) + 1)),
-            "Projected FCF": fcf_proj
-        })
-        st.bar_chart(proj_df.set_index("Year"))
-    except Exception:
-        st.warning("Unable to compute DCF (missing FCF or CapEx data).")
+st.metric("WACC", f"{wacc*100:.2f}%")
 
-    # Black-Scholes Options
-    st.subheader("📌 Options Valuation (Black-Scholes)")
-    S = data["history"]["Close"].iloc[-1]
-    K = S * 1.05
-    T = 0.5
-    r = 0.03
-    sigma = data["history"]["Close"].pct_change().std() * np.sqrt(252)
-    call_price = black_scholes(S, K, T, r, sigma, option="call")
-    put_price = black_scholes(S, K, T, r, sigma, option="put")
-    st.write(f"**Call Option (K={K:.2f}):** ${call_price:.2f}")
-    st.write(f"**Put Option (K={K:.2f}):** ${put_price:.2f}")
+# ------------------------------
+# DCF Valuation
+# ------------------------------
+st.subheader("📉 DCF Valuation")
+discount_factors = [(1/(1+wacc)**i) for i in range(1, years+1)]
+dcf = (proj_df["FCF"] * discount_factors).sum()
 
-    # News Feed
-    st.subheader("📰 Latest News")
-    news = fetch_news(ticker_input)
-    if news:
-        for article in news[:5]:
-            st.markdown(f"- [{article['title']}]({article['link']})")
-    else:
-        st.write("No recent news found.")
+terminal_growth = st.number_input("Terminal Growth Rate (%)", value=2.0) / 100
+terminal_value = proj_df["FCF"].iloc[-1] * (1+terminal_growth) / (wacc - terminal_growth)
+terminal_value_pv = terminal_value / ((1+wacc)**years)
 
+ev = dcf + terminal_value_pv
+equity_value = ev - debt_val
+intrinsic_price = equity_value / info.get("sharesOutstanding", 1)
+
+st.metric("Enterprise Value", f"${ev/1e9:.2f}B")
+st.metric("Equity Value", f"${equity_value/1e9:.2f}B")
+st.metric("Intrinsic Price / Share", f"${intrinsic_price:.2f}")
+
+# ------------------------------
+# Financing & Dilution
+# ------------------------------
+st.subheader("🏗️ Project Financing & Dilution Analysis")
+
+project_cost = st.number_input("Project Cost ($B)", value=3.0) * 1e9
+equity_raise = st.slider("Equity Financing Portion (%)", 0, 100, 50) / 100
+debt_raise = 1 - equity_raise
+
+new_equity = project_cost * equity_raise
+new_debt = project_cost * debt_raise
+
+issue_price = st.number_input("Equity Issue Price ($)", value=intrinsic_price)
+new_shares = new_equity / issue_price
+dilution = new_shares / info.get("sharesOutstanding", 1)
+
+st.metric("New Debt", f"${new_debt/1e9:.2f}B")
+st.metric("New Equity Raised", f"${new_equity/1e9:.2f}B")
+st.metric("Share Dilution", f"{dilution*100:.2f}%")
+
+# ------------------------------
+# Black-Scholes Option Pricing
+# ------------------------------
+st.subheader("📊 Black-Scholes Option Pricing")
+
+S = st.number_input("Current Stock Price (S)", value=float(hist["Close"].iloc[-1]))
+K = st.number_input("Strike Price (K)", value=S*1.05)
+T = st.number_input("Time to Maturity (Years)", value=1.0)
+sigma = st.number_input("Volatility (σ)", value=0.3)
+r = rf
+
+d1 = (np.log(S/K) + (r + 0.5*sigma**2)*T) / (sigma*np.sqrt(T))
+d2 = d1 - sigma*np.sqrt(T)
+call_price = S*norm.cdf(d1) - K*np.exp(-r*T)*norm.cdf(d2)
+put_price = K*np.exp(-r*T)*norm.cdf(-d2) - S*norm.cdf(-d1)
+
+st.metric("Call Option Value", f"${call_price:.2f}")
+st.metric("Put Option Value", f"${put_price:.2f}")
+
+# ------------------------------
+# News Feed
+# ------------------------------
+st.subheader("📰 Latest News")
+if "longBusinessSummary" in info:
+    st.write(info["longBusinessSummary"])
+else:
+    st.info("No news summary available.")
